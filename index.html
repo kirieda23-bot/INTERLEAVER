@@ -76,22 +76,36 @@ let ff = null;
 
 async function load() {
   if (ff) return ff;
+  if (typeof FFmpegWASM === 'undefined' || typeof FFmpegUtil === 'undefined')
+    throw new Error('Non riesco a scaricare i file della pagina. Controlla la connessione e ricarica.');
   const { FFmpeg } = FFmpegWASM;
   const { toBlobURL } = FFmpegUtil;
-  ff = new FFmpeg();
-  ff.on('log', ({ message }) => { ff._logs = (ff._logs || '') + message + '\n'; });
-  ff.on('progress', ({ progress }) => {
-    if (progress > 0 && progress <= 1) { $('bar').style.width = (progress * 100) + '%'; msg('Elaboro... ' + Math.round(progress * 100) + '%'); }
-  });
-  msg('Scarico il motore di elaborazione (circa 30 MB, solo la prima volta)...');
-  const core = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
-  const wrk = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd';
-  await ff.load({
-    coreURL: await toBlobURL(core + '/ffmpeg-core.js', 'text/javascript'),
-    wasmURL: await toBlobURL(core + '/ffmpeg-core.wasm', 'application/wasm'),
-    classWorkerURL: await toBlobURL(wrk + '/814.ffmpeg.js', 'text/javascript')
-  });
-  return ff;
+  const bases = ['https://cdn.jsdelivr.net/npm', 'https://unpkg.com'];
+  let last = '';
+  for (const b of bases) {
+    const inst = new FFmpeg();
+    inst._logs = '';
+    inst.on('log', ({ message }) => { inst._logs += message + '\n'; });
+    inst.on('progress', ({ progress }) => {
+      if (progress > 0 && progress <= 1) { $('bar').style.width = (progress * 100) + '%'; msg('Elaboro... ' + Math.round(progress * 100) + '%'); }
+    });
+    try {
+      msg('Scarico il motore di elaborazione (circa 30 MB, solo la prima volta)...');
+      const core = b + '/@ffmpeg/core@0.12.6/dist/umd';
+      const wrk = b + '/@ffmpeg/ffmpeg@0.12.10/dist/umd';
+      await inst.load({
+        coreURL: await toBlobURL(core + '/ffmpeg-core.js', 'text/javascript'),
+        wasmURL: await toBlobURL(core + '/ffmpeg-core.wasm', 'application/wasm'),
+        classWorkerURL: await toBlobURL(wrk + '/814.ffmpeg.js', 'text/javascript')
+      });
+      ff = inst;
+      return ff;
+    } catch (e) {
+      last = (e && e.message) ? e.message : String(e);
+      log('Caricamento da ' + b + ' fallito: ' + last);
+    }
+  }
+  throw new Error('Non riesco a caricare il motore ffmpeg (' + last + ').');
 }
 
 function parseFps(f) {
