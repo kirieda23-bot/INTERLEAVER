@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frame Interleaver</title>
+<style>
+:root{--bg:#f3f4f1;--fg:#1b1d1f;--mut:#62676b;--card:#fff;--line:#d5d8d3;--acc:#2447d6;--accfg:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#16181a;--fg:#eceeea;--mut:#9aa0a4;--card:#202325;--line:#33373a;--acc:#7c97ff;--accfg:#10131f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 "Trebuchet MS",Verdana,sans-serif;padding:20px 16px 48px}
+main{max-width:560px;margin:0 auto}
+h1{font:700 26px/1.2 Georgia,"Times New Roman",serif;margin:0 0 6px}
+p.sub{color:var(--mut);margin:0 0 20px}
+fieldset{border:1px solid var(--line);background:var(--card);border-radius:6px;margin:0 0 14px;padding:14px}
+legend{font-weight:700;padding:0 6px}
+label{display:block;margin:10px 0 4px;font-size:15px}
+input[type=file],input[type=number],select{width:100%;padding:10px;font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:4px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.chk{display:flex;gap:8px;align-items:center;margin-top:12px}
+.chk input{width:20px;height:20px}
+small{color:var(--mut);display:block;margin-top:4px}
+button{width:100%;padding:14px;font:700 17px inherit;font-family:inherit;border:0;border-radius:4px;background:var(--acc);color:var(--accfg);cursor:pointer}
+button:disabled{opacity:.5}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+.strip{height:14px;margin:16px 0 6px;border:1px solid var(--line);border-radius:3px;background:repeating-linear-gradient(90deg,var(--line) 0 10px,transparent 10px 14px);position:relative;overflow:hidden}
+.strip i{position:absolute;inset:0 auto 0 0;width:0;background:repeating-linear-gradient(90deg,var(--acc) 0 10px,transparent 10px 14px)}
+#msg{color:var(--mut);min-height:1.5em}
+#log{font:12px/1.4 Consolas,monospace;white-space:pre-wrap;max-height:150px;overflow:auto;color:var(--mut);margin-top:8px}
+video{width:100%;margin-top:14px;border-radius:4px;background:#000}
+a.dl{display:block;text-align:center;margin-top:10px;padding:12px;border:2px solid var(--acc);border-radius:4px;color:var(--acc);font-weight:700;text-decoration:none}
+</style>
+</head>
+<body>
+<main>
+<h1>Frame Interleaver</h1>
+<p class="sub">Inserisce delle immagini tra i frame del video, con dissolvenza tra una e l'altra. Tutto avviene nel telefono: il video non viene caricato su nessun server.</p>
+
+<fieldset><legend>File</legend>
+<label for="vid">Video</label>
+<input id="vid" type="file" accept="video/*">
+<label for="imgs">Immagini (puoi sceglierne più di una)</label>
+<input id="imgs" type="file" accept="image/*" multiple>
+<small>Meglio video corti (pochi minuti): la memoria del telefono è limitata.</small>
+</fieldset>
+
+<fieldset><legend>Impostazioni</legend>
+<div class="row">
+<div><label for="k">Ogni quanti frame video</label><input id="k" type="number" min="1" value="1"></div>
+<div><label for="secs">Secondi di ogni immagine</label><input id="secs" type="number" min="1" value="5"></div>
+</div>
+<div class="row">
+<div><label for="fsec">Secondi di dissolvenza</label><input id="fsec" type="number" min="0" value="3"></div>
+<div><label for="res">Lato corto massimo (px)</label><input id="res" type="number" min="0" value="480"></div>
+</div>
+<label for="fit">Adattamento delle immagini</label>
+<select id="fit"><option value="1">Riempie lo schermo (taglia i bordi)</option><option value="2">Intera, con bande nere</option><option value="3">Stirata</option></select>
+<div class="chk"><input id="aud" type="checkbox" checked><label for="aud" style="margin:0">Tieni l'audio</label></div>
+<small>Con 1 frame, l'immagine compare a ogni frame del video. Dissolvenza 0 = cambio netto. Risoluzione 0 = originale (più pesante).</small>
+</fieldset>
+
+<button id="go">Elabora il video</button>
+<div class="strip"><i id="bar"></i></div>
+<div id="msg"></div>
+<div id="out"></div>
+<div id="log"></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const msg = t => { $('msg').textContent = t; };
+const log = t => { const l = $('log'); l.textContent += t + '\n'; l.scrollTop = l.scrollHeight; };
+let ff = null;
+
+async function load() {
+  if (ff) return ff;
+  const { FFmpeg } = FFmpegWASM;
+  const { toBlobURL } = FFmpegUtil;
+  ff = new FFmpeg();
+  ff.on('log', ({ message }) => { ff._logs = (ff._logs || '') + message + '\n'; });
+  ff.on('progress', ({ progress }) => {
+    if (progress > 0 && progress <= 1) { $('bar').style.width = (progress * 100) + '%'; msg('Elaboro... ' + Math.round(progress * 100) + '%'); }
+  });
+  msg('Scarico il motore di elaborazione (circa 30 MB, solo la prima volta)...');
+  const core = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
+  const wrk = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd';
+  await ff.load({
+    coreURL: await toBlobURL(core + '/ffmpeg-core.js', 'text/javascript'),
+    wasmURL: await toBlobURL(core + '/ffmpeg-core.wasm', 'application/wasm'),
+    classWorkerURL: await toBlobURL(wrk + '/814.ffmpeg.js', 'text/javascript')
+  });
+  return ff;
+}
+
+function parseFps(f) {
+  const map = [[23.976, '24000/1001'], [29.97, '30000/1001'], [59.94, '60000/1001']];
+  for (const [v, s] of map) if (Math.abs(f - v) < 0.02) return s.split('/').map(Number);
+  return [Math.max(1, Math.round(f)), 1];
+}
+
+async function run() {
+  const vf = $('vid').files[0], imgs = [...$('imgs').files];
+  if (!vf) return msg('Scegli prima il video.');
+  if (!imgs.length) return msg('Scegli almeno un\'immagine.');
+  const K = Math.max(1, parseInt($('k').value) || 1);
+  const secs = Math.max(1, parseFloat($('secs').value) || 5);
+  const fsec = Math.max(0, parseFloat($('fsec').value) || 0);
+  const res = Math.max(0, parseInt($('res').value) || 0);
+  const fit = $('fit').value, keepA = $('aud').checked;
+
+  $('go').disabled = true; $('out').innerHTML = ''; $('log').textContent = ''; $('bar').style.width = '0';
+  try {
+    const f = await load();
+    const { fetchFile } = FFmpegUtil;
+    msg('Leggo i file...');
+    const ext = n => (n.match(/\.[A-Za-z0-9]+$/) || ['.bin'])[0];
+    const vin = 'in' + ext(vf.name);
+    await f.writeFile(vin, await fetchFile(vf));
+    const inames = [];
+    for (let i = 0; i < imgs.length; i++) { const n = 'img' + i + ext(imgs[i].name); await f.writeFile(n, await fetchFile(imgs[i])); inames.push(n); }
+
+    f._logs = ''; await f.exec(['-i', vin]);
+    const vl = (f._logs.match(/Stream #.*Video:.*/) || [''])[0];
+    const sz = vl.match(/(\d{2,5})x(\d{2,5})/), fr = vl.match(/([\d.]+) fps/);
+    if (!sz) throw new Error('Non riesco a leggere le dimensioni del video.');
+    const w = +sz[1], h = +sz[2];
+    const [fn, fd] = parseFps(fr ? parseFloat(fr[1]) : 30);
+    const hasA = keepA && /Stream #.*Audio:/.test(f._logs);
+
+    const sm = Math.min(w, h), ev = x => Math.floor(x / 2) * 2;
+    let nw = ev(w), nh = ev(h);
+    if (res > 0 && sm > res) { nw = ev(Math.floor(w * res / sm)); nh = ev(Math.floor(h * res / sm)); }
+
+    const imf = fit === '2'
+      ? `scale=${nw}:${nh}:force_original_aspect_ratio=decrease,pad=${nw}:${nh}:(ow-iw)/2:(oh-ih)/2:black`
+      : fit === '3' ? `scale=${nw}:${nh}`
+      : `scale=${nw}:${nh}:force_original_aspect_ratio=increase,crop=${nw}:${nh}`;
+
+    const k1 = K + 1, on = fn * k1, od = fd * K, M = imgs.length;
+    const hold = Math.max(1, Math.floor(secs * fn / (fd * K)));
+    const fade = Math.max(1, Math.floor(fsec * fn / (fd * K)));
+    const L = hold + fade;
+
+    let fc = '';
+    for (let i = 1; i <= M; i++)
+      fc += `[${i}:v]fps=${fn}/${fd},${imf},setsar=1,format=yuv420p` + (M > 1 ? `,split[a${i}][b${i}];` : `[a${i}];`);
+    let chn = '[a1]';
+    if (M > 1) {
+      let A = '[a1]', B = '[b1]';
+      for (let j = 2; j <= M; j++) {
+        fc += `${A}[a${j}]overlay=enable='eq(mod(floor(n/${L}),${M}),${j - 1})'[oa${j}];`;
+        fc += `${B}[b${j}]overlay=enable='eq(mod(floor(n/${L})+1,${M}),${j - 1})'[ob${j}];`;
+        A = `[oa${j}]`; B = `[ob${j}]`;
+      }
+      const mx = `255*clip((mod(N,${L})-${hold})/${fade},0,1)`;
+      fc += `color=c=black:s=16x16:r=${fn}/${fd},format=yuv420p,geq=lum='${mx}':cb='${mx}':cr='${mx}',scale=${nw}:${nh}[MK];`;
+      fc += `${A}${B}[MK]maskedmerge[AB];`;
+      chn = '[AB]';
+    }
+    fc += `[0:v]fps=${fn}/${fd},scale=${nw}:${nh},setsar=1,format=yuv420p,settb=${od}/${on},setpts=N+floor(N/${K})[a];`;
+    fc += `${chn}format=yuv420p,settb=${od}/${on},setpts=(N+1)*${k1}-1[b];[a][b]interleave=duration=first[v]`;
+
+    const args = ['-i', vin];
+    inames.forEach(n => args.push('-loop', '1', '-framerate', `${fn}/${fd}`, '-i', n));
+    args.push('-filter_complex', fc, '-map', '[v]');
+    if (hasA) args.push('-map', '0:a?', '-c:a', 'aac', '-b:a', '128k'); else args.push('-an');
+    args.push('-c:v', 'libx264', '-crf', '23', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-r', `${on}/${od}`, '-movflags', '+faststart', 'out.mp4');
+
+    log(`Video ${w}x${h} a ${fn}/${fd} fps -> uscita ${nw}x${nh}, ${M} immagini`);
+    msg('Elaboro... può richiedere molto tempo. Tieni aperta questa pagina.');
+    const code = await f.exec(args);
+    if (code !== 0) { log(f._logs.split('\n').slice(-12).join('\n')); throw new Error('ffmpeg non è riuscito a creare il video (vedi il registro qui sotto).'); }
+
+    const data = await f.readFile('out.mp4');
+    const url = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
+    $('bar').style.width = '100%';
+    $('out').innerHTML = `<video controls playsinline src="${url}"></video><a class="dl" href="${url}" download="video_interleaved.mp4">Scarica il video</a>`;
+    msg('Fatto.');
+    for (const n of [vin, ...inames, 'out.mp4']) { try { await f.deleteFile(n); } catch (e) {} }
+  } catch (e) {
+    msg('Errore: ' + (e.message || e) + ' Prova con un video più corto o una risoluzione più bassa.');
+  } finally { $('go').disabled = false; }
+}
+$('go').addEventListener('click', run);
+</script>
+</body>
+</html>
